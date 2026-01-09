@@ -1,0 +1,8 @@
+# Log files
+*.log
+
+# Windows shortcuts
+*.lnk
+
+# Git files
+.git/
