@@ -32,7 +32,40 @@ LogMessage(msg) {
     global LOG_FILE
     timestamp := FormatTime(A_Now, "yyyy-MM-dd HH:mm:ss")
     logLine := timestamp . " | " . msg . "`n"
-    FileAppend(logLine, LOG_FILE)
+    
+    ; Read existing log file (if it exists)
+    existingLog := ""
+    if FileExist(LOG_FILE) {
+        try {
+            existingLog := FileRead(LOG_FILE)
+        } catch {
+            existingLog := ""
+        }
+    }
+    
+    ; Prepend new entry and limit to 100 lines
+    allLines := [logLine]
+    if (existingLog != "") {
+        lines := StrSplit(existingLog, "`n", "`r")
+        ; Add existing lines (skip empty last line if file ends with newline)
+        for i, line in lines {
+            if (line != "" && allLines.Length < 100) {
+                allLines.Push(line . "`n")
+            }
+        }
+    }
+    
+    ; Write back to file (most recent first, max 100 lines)
+    try {
+        FileDelete(LOG_FILE)
+        for i, line in allLines {
+            FileAppend(line, LOG_FILE)
+        }
+    } catch as e {
+        ; Fallback: just append if write fails
+        FileAppend(logLine, LOG_FILE)
+    }
+    
     if DEBUG
         ToolTip(msg, 20, 20)
 }
@@ -132,14 +165,61 @@ DoFlagUpdate(*) {
                     LogMessage("NOT within 14 days of ORIGINAL deadline " . Human(baseDeadline) . " (today: " . Human(now) . ")")
                 }
             } else if (flagSuffix = "3mo") {
-                ; For 3 mo: move to +2mo, then -14 days
-                d1 := AdjustToMonday(DateAdd(DateAdd(baseDeadline, 2, "Months"), -14, "Days"))
-                LogMessage("3mo logic: " . Human(baseDeadline) . " → " . Human(d1))
+                ; For 3 mo: add 1 month (with month-end handling), then -14 days, then find next weekday
+                ; Example: 1/30 + 1 month = 2/28 (rounds down), then -14 days = 2/14, then find next weekday
+                LogMessage("3mo: Starting calculation with baseDeadline = '" . baseDeadline . "' (type: " . Type(baseDeadline) . ", length: " . StrLen(baseDeadline) . ")")
+                ; Extract year, month, day from baseDeadline (YYYYMMDDHHMMSS format)
+                y := Integer(SubStr(baseDeadline, 1, 4))
+                m := Integer(SubStr(baseDeadline, 5, 2))
+                d := Integer(SubStr(baseDeadline, 7, 2))
+                LogMessage("3mo: Extracted y=" . y . ", m=" . m . ", d=" . d)
                 
-                if IsWithinDays(now, d1, 14) {
-                    newDue := d1
-                    LogMessage("Within 14 days of (deadline +2mo −14d for 3mo). Setting Due to: " . Human(newDue))
+                ; Add 1 month
+                m := m + 1
+                if (m > 12) {
+                    m := 1
+                    y := y + 1
                 }
+                LogMessage("3mo: After adding 1 month: y=" . y . ", m=" . m . ", d=" . d)
+                
+                ; Calculate last day of target month (handle month-end rounding)
+                ; Days in each month (accounting for leap years)
+                daysInMonth := [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+                ; Check for leap year
+                isLeapYear := (Mod(y, 4) = 0 && Mod(y, 100) != 0) || (Mod(y, 400) = 0)
+                if (isLeapYear && m = 2)
+                    daysInMonth[2] := 29
+                else
+                    daysInMonth[2] := 28
+                
+                ; Round down day if it exceeds month length (e.g., Jan 30 -> Feb 28)
+                maxDay := daysInMonth[m]
+                LogMessage("3mo: maxDay for month " . m . " = " . maxDay . " (leap year: " . isLeapYear . ")")
+                if (d > maxDay) {
+                    LogMessage("3mo: Rounding down day from " . d . " to " . maxDay)
+                    d := maxDay
+                }
+                LogMessage("3mo: Final values before Format: y=" . y . ", m=" . m . ", d=" . d)
+                
+                ; Create timestamp string
+                oneMonthLaterStamp := Format("{:04}{:02}{:02}090000", y, m, d)
+                LogMessage("3mo: Calculated oneMonthLaterStamp = '" . oneMonthLaterStamp . "' (type: " . Type(oneMonthLaterStamp) . ", length: " . StrLen(oneMonthLaterStamp) . ")")
+                LogMessage("3mo: About to call DateAdd with: stamp='" . oneMonthLaterStamp . "', amount=-14, unit='Days'")
+                try {
+                    twoWeeksBefore := DateAdd(oneMonthLaterStamp, -14, "Days")
+                    LogMessage("3mo: DateAdd succeeded, twoWeeksBefore = '" . twoWeeksBefore . "'")
+                    LogMessage("3mo: About to call AdjustToMonday with: '" . twoWeeksBefore . "'")
+                    d1 := AdjustToMonday(twoWeeksBefore)
+                    LogMessage("3mo: AdjustToMonday succeeded, d1 = '" . d1 . "'")
+                } catch as e {
+                    LogMessage("3mo ERROR in DateAdd/AdjustToMonday: " . e.Message . " | What: " . e.What . " | File: " . e.File . " | Line: " . e.Line)
+                    throw e
+                }
+                LogMessage("3mo logic: " . Human(baseDeadline) . " → +1mo: " . Human(oneMonthLaterStamp) . " → -14d: " . Human(twoWeeksBefore) . " → next weekday: " . Human(d1))
+                
+                ; Always apply the calculated date for 3mo flags
+                newDue := d1
+                LogMessage("Applying 3mo progression. Setting Due to: " . Human(newDue))
             }
         }
 
@@ -302,12 +382,28 @@ IsWithinDays(stampA, stampB, days) {
 }
 
 AdjustToMonday(stamp) {
-    w := Integer(FormatTime(stamp, "WDay")) ; 1=Sun, 7=Sat
-    if (w = 7)
-        return DateAdd(stamp, 2, "Days")
-    if (w = 1)
-        return DateAdd(stamp, 1, "Days")
-    return stamp
+    LogMessage("AdjustToMonday: Input stamp = '" . stamp . "' (type: " . Type(stamp) . ", length: " . StrLen(stamp) . ")")
+    try {
+        w := Integer(FormatTime(stamp, "WDay")) ; 1=Sun, 7=Sat
+        LogMessage("AdjustToMonday: WDay = " . w)
+        if (w = 7) {
+            LogMessage("AdjustToMonday: Saturday detected, adding 2 days")
+            result := DateAdd(stamp, 2, "Days")
+            LogMessage("AdjustToMonday: DateAdd(2 days) result = '" . result . "'")
+            return result
+        }
+        if (w = 1) {
+            LogMessage("AdjustToMonday: Sunday detected, adding 1 day")
+            result := DateAdd(stamp, 1, "Days")
+            LogMessage("AdjustToMonday: DateAdd(1 day) result = '" . result . "'")
+            return result
+        }
+        LogMessage("AdjustToMonday: Weekday detected, returning original stamp")
+        return stamp
+    } catch as e {
+        LogMessage("AdjustToMonday ERROR: " . e.Message . " | What: " . e.What . " | File: " . e.File . " | Line: " . e.Line)
+        throw e
+    }
 }
 
 DateAtHour(stamp, hour) {
