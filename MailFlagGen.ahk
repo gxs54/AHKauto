@@ -52,9 +52,11 @@ ParseToTimestamp(str) {
 
     ; ---- Month DD, YYYY (comma optional) ----
     if RegExMatch(str, "i)^(January|February|March|April|May|June|July|August|September|October|November|December)\s+(\d{1,2})(?:,\s*|\s+)(\d{4})$", &m) {
-        monthMap := Map(
-            "January","01","February","02","March","03","April","04","May","05","June","06",
-            "July","07","August","08","September","09","October","10","November","11","December","12")
+        monthMap := Map()
+        monthMap.CaseSense := false
+        monthMap["January"]:="01", monthMap["February"]:="02", monthMap["March"]:="03", monthMap["April"]:="04"
+        monthMap["May"]:="05", monthMap["June"]:="06", monthMap["July"]:="07", monthMap["August"]:="08"
+        monthMap["September"]:="09", monthMap["October"]:="10", monthMap["November"]:="11", monthMap["December"]:="12"
         mon := monthMap[m[1]]
         day := Format("{:02}", m[2])
         yr  := m[3]
@@ -63,9 +65,11 @@ ParseToTimestamp(str) {
 
     ; ---- Month DD (no year) → assume current year ----
     if RegExMatch(str, "i)^(January|February|March|April|May|June|July|August|September|October|November|December)\s+(\d{1,2})$", &m) {
-        monthMap := Map(
-            "January","01","February","02","March","03","April","04","May","05","June","06",
-            "July","07","August","08","September","09","October","10","November","11","December","12")
+        monthMap := Map()
+        monthMap.CaseSense := false
+        monthMap["January"]:="01", monthMap["February"]:="02", monthMap["March"]:="03", monthMap["April"]:="04"
+        monthMap["May"]:="05", monthMap["June"]:="06", monthMap["July"]:="07", monthMap["August"]:="08"
+        monthMap["September"]:="09", monthMap["October"]:="10", monthMap["November"]:="11", monthMap["December"]:="12"
         mon := monthMap[m[1]]
         day := Format("{:02}", m[2])
         yr  := FormatTime(A_Now, "yyyy")
