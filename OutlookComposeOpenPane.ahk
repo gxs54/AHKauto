@@ -7,7 +7,7 @@ outlookExe      := "outlook.exe"
 waitSecs        := 10                   ; seconds to wait for a new compose window
 keytipDelayMs   := 80                   ; pause between each keytip keystroke
 modalTitle      := "Office Add-ins"     ; title of the modal opened by Alt,0,7
-modalWaitSecs   := 3                    ; seconds to wait for the modal
+modalWaitSecs   := 5                    ; seconds to wait for the modal
 modalActSeq     := "{Tab}{Enter}"       ; keystrokes inside the modal to activate LLM Edit
 modalActPause   := 600                  ; ms to wait after modalActSeq before checking
 logPath         := EnvGet("TEMP") . "\OutlookComposeOpenPane.log"
@@ -41,7 +41,15 @@ OpenLlmEditPane(*) {
         return ShowError("Could not activate the compose window. Log: " logPath)
     }
 
+    ; Wait for the user to release the Ctrl+Shift+L hotkey before synthesizing
+    ; Alt — otherwise Outlook sees Ctrl+Shift+Alt and the keytip menu never
+    ; opens. This was the intermittent 'modal did not open' failure.
+    KeyWait("Ctrl")
+    KeyWait("Shift")
+    KeyWait("l")
+
     ; Open Office Add-ins modal via QAT keytips
+    Log("sending keytips Alt,0,7")
     Send("{Alt down}{Alt up}")
     Sleep keytipDelayMs
     Send("0")
@@ -115,20 +123,53 @@ ResolveComposeTarget() {
 ; Returns one of: "popout-inline", "replyall", or "" (nothing actionable).
 TriggerViaCom() {
     outlook := 0
-    try outlook := ComObjActive("Outlook.Application")
+    ; Use ComObject (CoCreateInstance + Office single-instance rule) instead
+    ; of ComObjActive (ROT lookup) — the latter fails when the AHK script
+    ; and Outlook run at different integrity levels.
+    try {
+        outlook := ComObject("Outlook.Application")
+    } catch as e {
+        Log("COM: ComObject('Outlook.Application') failed: " e.Message)
+        return ""
+    }
     if (!outlook) {
-        Log("COM: Outlook not accessible (not running?)")
+        Log("COM: Outlook object is falsy")
         return ""
     }
 
     explorer := 0
-    try explorer := outlook.ActiveExplorer
-    if (!explorer)
+    try {
+        explorer := outlook.ActiveExplorer
+    } catch as e {
+        Log("COM: ActiveExplorer failed: " e.Message)
+    }
+    if (!explorer) {
+        Log("COM: no ActiveExplorer")
         return ""
+    }
 
-    ; 2a. Inline reply / forward in the reading pane — pop it out
+    ; 2a. Inline reply / forward in the reading pane — pop it out.
+    ;     Also probe ActiveInlineResponseWordEditor as a secondary signal;
+    ;     ActiveInlineResponse can return null even when a draft is visible.
     inline := 0
-    try inline := explorer.ActiveInlineResponse
+    inlineErr := ""
+    try {
+        inline := explorer.ActiveInlineResponse
+    } catch as e {
+        inlineErr := e.Message
+    }
+    inlineEditor := 0
+    editorErr := ""
+    try {
+        inlineEditor := explorer.ActiveInlineResponseWordEditor
+    } catch as e {
+        editorErr := e.Message
+    }
+    Log("COM: inline=" (inline ? "obj" : "null")
+        . " inlineEditor=" (inlineEditor ? "obj" : "null")
+        . (inlineErr != "" ? " inlineErr='" inlineErr "'" : "")
+        . (editorErr != "" ? " editorErr='" editorErr "'" : ""))
+
     if (inline) {
         try {
             inline.Display()
@@ -139,15 +180,23 @@ TriggerViaCom() {
     }
 
     ; 2b. Selected mail item — Reply All (popped out by default for new items)
+    selCount := 0
     try {
-        if (explorer.Selection.Count > 0) {
+        selCount := explorer.Selection.Count
+    } catch as e {
+        Log("COM: Selection.Count failed: " e.Message)
+    }
+    Log("COM: selection.count=" selCount)
+
+    if (selCount > 0) {
+        try {
             item := explorer.Selection.Item(1)
             reply := item.ReplyAll()
             reply.Display()
             return "replyall"
+        } catch as e {
+            Log("COM: ReplyAll failed: " e.Message)
         }
-    } catch as e {
-        Log("COM: ReplyAll failed: " e.Message)
     }
 
     return ""
