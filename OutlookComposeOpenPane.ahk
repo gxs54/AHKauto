@@ -5,9 +5,12 @@
 hotCombo        := "^+l"                ; Ctrl + Shift + L
 outlookExe      := "outlook.exe"
 waitSecs        := 10                   ; seconds to wait for a new compose window
-keytipDelayMs   := 80                   ; pause between each keytip keystroke
+composeSettleMs := 250                  ; pause after activating compose, before keytips
+keytipDelayMs   := 150                  ; pause between each keytip keystroke
+keytipMenuMs    := 250                  ; pause after Alt for the ribbon keytips to render
 modalTitle      := "Office Add-ins"     ; title of the modal opened by Alt,0,7
 modalWaitSecs   := 5                    ; seconds to wait for the modal
+modalSettleMs   := 300                  ; pause after the modal is active, before modalActSeq
 modalActSeq     := "{Tab}{Enter}"       ; keystrokes inside the modal to activate LLM Edit
 modalActPause   := 600                  ; ms to wait after modalActSeq before checking
 logPath         := EnvGet("TEMP") . "\OutlookComposeOpenPane.log"
@@ -27,7 +30,7 @@ Log(msg) {
 
 OpenLlmEditPane(*) {
     global logPath, modalTitle, modalWaitSecs, modalActSeq, modalActPause
-    global keytipDelayMs
+    global keytipDelayMs, keytipMenuMs, composeSettleMs, modalSettleMs
 
     Log("------ hotkey fired ------")
 
@@ -48,10 +51,14 @@ OpenLlmEditPane(*) {
     KeyWait("Shift")
     KeyWait("l")
 
+    ; Let the freshly-activated compose window settle so the ribbon is ready to
+    ; accept keytips — without this the Alt,0,7 sequence is occasionally dropped.
+    Sleep composeSettleMs
+
     ; Open Office Add-ins modal via QAT keytips
     Log("sending keytips Alt,0,7")
     Send("{Alt down}{Alt up}")
-    Sleep keytipDelayMs
+    Sleep keytipMenuMs            ; wait for the keytip overlay to render before "0"
     Send("0")
     Sleep keytipDelayMs
     Send("7")
@@ -62,6 +69,9 @@ OpenLlmEditPane(*) {
     }
     WinActivate(modalTitle)
     WinWaitActive(modalTitle, , 1)
+
+    ; Let the modal's controls finish painting/focusing before driving them.
+    Sleep modalSettleMs
 
     Send(modalActSeq)
     Sleep modalActPause
