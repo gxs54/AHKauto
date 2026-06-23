@@ -15,10 +15,12 @@ DefaultDueHour    := 9   ; 09:00 local
 ;  3) MM/DD/YY
 ;  4) Month DD, YYYY    (comma optional)
 ;  5) Month DD          (no year)
+;  6) DD Mon YYYY       (day-first, abbreviated or full month: "11 Sep 2026")
 DatePattern := "i)(\d{4}-\d{2}-\d{2})"                              ; ISO 2025-07-08
             . "|(\d{1,2}/\d{1,2}/\d{4})"                            ; 07/08/2025
             . "|(\d{1,2}/\d{1,2}/\d{2})"                             ; 07/08/25
             . "|((January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2}(?:,\s*|\s+)\d{4})" ; Month DD, YYYY
+            . "|(\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s+\d{4})"                                    ; DD Mon YYYY (11 Sep 2026)
             . "|((January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2})"                  ; Month DD
 
 #HotIf WinActive("ahk_class rctrl_renwnd32")   ; Outlook main window
@@ -27,6 +29,17 @@ DatePattern := "i)(\d{4}-\d{2}-\d{2})"                              ; ISO 2025-0
 
 
 ; ------------ helper functions ------------
+; Map a month name (full or abbreviated, e.g. "September", "Sep", "Sept")
+; to a 2-digit number. Keys on the first 3 letters, which are unique per month.
+MonthNum(name) {
+    static months := Map(
+        "jan","01", "feb","02", "mar","03", "apr","04",
+        "may","05", "jun","06", "jul","07", "aug","08",
+        "sep","09", "oct","10", "nov","11", "dec","12")
+    key := StrLower(SubStr(Trim(name), 1, 3))
+    return months.Has(key) ? months[key] : ""
+}
+
 ParseToTimestamp(str) {
     str := Trim(str)
 
@@ -74,6 +87,15 @@ ParseToTimestamp(str) {
         day := Format("{:02}", m[2])
         yr  := FormatTime(A_Now, "yyyy")
         return yr . mon . day . "000000"
+    }
+
+    ; ---- DD Mon YYYY (day-first, abbreviated or full: "11 Sep 2026") ----
+    if RegExMatch(str, "i)^(\d{1,2})\s+([A-Za-z]+)\.?\s+(\d{4})$", &m) {
+        mon := MonthNum(m[2])
+        if (mon != "") {
+            day := Format("{:02}", m[1])
+            return m[3] . mon . day . "000000"
+        }
     }
 
     return ""
