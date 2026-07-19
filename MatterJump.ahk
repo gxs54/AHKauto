@@ -267,18 +267,31 @@ OpenExplorer(path) {
 		EnsureExplorerSize(newHwnd, minWidth, minHeight)
 
 
-    ; set view & sort silently via COM
-    doc := GetShellDocFromHwnd(newHwnd)
-    if doc {
-        try {
-            ; 8 = Content view
-            doc.CurrentViewMode := 8
-            ; Sort by Date Modified descending
-            doc.SortColumns := "System.DateModified:descending"
+    ; set view, sort & grouping silently via COM
+    ; (retry: the COM doc exists before navigation finishes, and settings
+    ;  applied too early are silently dropped — confirm via read-back)
+    applied := false
+    Loop 25 {
+        win := GetShellWindowFromHwnd(newHwnd)
+        if win {
+            try {
+                doc := win.Document
+                ; 8 = Content view
+                doc.CurrentViewMode := 8
+                ; leading "-" = descending (shell canonical sort syntax)
+                doc.SortColumns := "prop:-System.DateModified;"
+                ; group direction is NOT scriptable via doc.GroupBy (always
+                ; ascending) — needs IFolderView2::SetGroupBy with fAscending=0
+                if (doc.SortColumns = "prop:-System.DateModified;") && SetGroupByDateModifiedDesc(win) {
+                    applied := true
+                    break
+                }
+            }
         }
-    } else {
-        Log("COM doc not found for hwnd " newHwnd)
+        Sleep 100
     }
+    if !applied
+        Log("View/sort/group not confirmed for hwnd " newHwnd)
 
     Log("Explorer adjusted & positioned (hwnd " newHwnd ")")
     return true
@@ -311,6 +324,34 @@ GetShellDocFromHwnd(hwnd) {
             return winItem.Document   ; IShellFolderViewDual2
     }
     return ""
+}
+
+GetShellWindowFromHwnd(hwnd) {
+    for winItem in ComObject("Shell.Application").Windows {
+        try if (winItem.HWND = hwnd)
+            return winItem            ; IWebBrowser2 (shell window)
+    }
+    return ""
+}
+
+; Group by Date Modified, newest group first, via IFolderView2::SetGroupBy.
+SetGroupByDateModifiedDesc(winItem) {
+    static SID_STopLevelBrowser := "{4C96BE40-915C-11CF-99D3-00AA004AE837}"
+    static IID_IShellBrowser    := "{000214E2-0000-0000-C000-000000000046}"
+    static IID_IFolderView2     := "{1AF3A467-214F-4298-908E-06B03E0B39F9}"
+    try {
+        sb := ComObjQuery(winItem, SID_STopLevelBrowser, IID_IShellBrowser)
+        ComCall(15, sb, "ptr*", &sv := 0)          ; IShellBrowser::QueryActiveShellView
+        fv2 := ComObjQuery(sv, IID_IFolderView2)
+        ObjRelease(sv)
+        ; PROPERTYKEY for System.DateModified = {B725F130-...} pid 14
+        pk := Buffer(20)
+        DllCall("ole32\CLSIDFromString", "wstr", "{B725F130-47EF-101A-A5F1-02608C9EEBAC}", "ptr", pk)
+        NumPut("uint", 14, pk, 16)
+        ComCall(17, fv2, "ptr", pk, "int", 0)      ; IFolderView2::SetGroupBy, fAscending=0
+        return true
+    }
+    return false
 }
 
 EnsureExplorerSize(hwnd, minW, minH) {
