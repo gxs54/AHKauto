@@ -282,7 +282,9 @@ OpenExplorer(path) {
                 doc.SortColumns := "prop:-System.DateModified;"
                 ; group direction is NOT scriptable via doc.GroupBy (always
                 ; ascending) — needs IFolderView2::SetGroupBy with fAscending=0
-                if (doc.SortColumns = "prop:-System.DateModified;") && SetGroupByDateModifiedDesc(win) {
+                ; (read-back is a substring match: Explorer may normalize the
+                ;  string, and an exact compare would spin all 25 retries)
+                if InStr(doc.SortColumns, "-System.DateModified") && SetGroupByDateModifiedDesc(win) {
                     applied := true
                     break
                 }
@@ -318,14 +320,6 @@ GetExplorerHwnds() {
     return WinGetList("ahk_class CabinetWClass")
 }
 
-GetShellDocFromHwnd(hwnd) {
-    for winItem in ComObject("Shell.Application").Windows {
-        try if (winItem.HWND = hwnd)
-            return winItem.Document   ; IShellFolderViewDual2
-    }
-    return ""
-}
-
 GetShellWindowFromHwnd(hwnd) {
     for winItem in ComObject("Shell.Application").Windows {
         try if (winItem.HWND = hwnd)
@@ -339,19 +333,23 @@ SetGroupByDateModifiedDesc(winItem) {
     static SID_STopLevelBrowser := "{4C96BE40-915C-11CF-99D3-00AA004AE837}"
     static IID_IShellBrowser    := "{000214E2-0000-0000-C000-000000000046}"
     static IID_IFolderView2     := "{1AF3A467-214F-4298-908E-06B03E0B39F9}"
+    sv := 0
     try {
         sb := ComObjQuery(winItem, SID_STopLevelBrowser, IID_IShellBrowser)
-        ComCall(15, sb, "ptr*", &sv := 0)          ; IShellBrowser::QueryActiveShellView
+        ComCall(15, sb, "ptr*", &sv)               ; IShellBrowser::QueryActiveShellView
         fv2 := ComObjQuery(sv, IID_IFolderView2)
-        ObjRelease(sv)
         ; PROPERTYKEY for System.DateModified = {B725F130-...} pid 14
         pk := Buffer(20)
         DllCall("ole32\CLSIDFromString", "wstr", "{B725F130-47EF-101A-A5F1-02608C9EEBAC}", "ptr", pk)
         NumPut("uint", 14, pk, 16)
         ComCall(17, fv2, "ptr", pk, "int", 0)      ; IFolderView2::SetGroupBy, fAscending=0
         return true
+    } catch {
+        return false
+    } finally {
+        if sv
+            ObjRelease(sv)
     }
-    return false
 }
 
 EnsureExplorerSize(hwnd, minW, minH) {

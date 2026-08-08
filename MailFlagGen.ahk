@@ -188,9 +188,12 @@ AddSmartFlag() {
     for s in SplitSentences(bodyClean) {
         if !RegExMatch(s, "i)\bdeadline\b")
             continue
-        ; (a) date AFTER the word “deadline”
-        if RegExMatch(s, "i)\bdeadline\b.*?" . dateBare, &mAfter) {
-            foundStr := mAfter[0]
+        ; (a) date AFTER the word “deadline”.
+        ; The alternation must be wrapped in a group: bare, the "deadline" prefix
+        ; binds only to the FIRST alternative. Capture the date alone — the full
+        ; match includes "deadline ..." and would never parse as a date.
+        if RegExMatch(s, "i)\bdeadline\b.*?(" . dateBare . ")", &mAfter) {
+            foundStr := mAfter[1]
             posOrig  := InStr(body, foundStr)
             break
         }
