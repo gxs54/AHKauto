@@ -172,8 +172,56 @@ TryOpenMatter(raw) {
         }
     }
 
+    ; 5b) Family-folder nesting — Q:\M\MOHN\P\P0134\MOHNP0134US03DIV
+    ;     Newer matters live one level below the P/T folder, inside a per-family
+    ;     folder named "<P|T><family digits>" (P0134). The child folder may carry
+    ;     the client code (MOHNP0134US03DIV) or not (BAEK: P0119\P0119US02DIV).
+    if typeF && RegExMatch(rest, "^[PT]\d+", &f) {
+        digits := SubStr(f[0], 2)                        ; 0134
+        bare   := LTrim(digits, "0")                     ; 134
+        if bare = ""
+            bare := "0"
+        padded := StrLen(bare) < 4                       ; 0134
+                    ? SubStr("0000", 1, 4 - StrLen(bare)) bare
+                    : bare
+
+        famPrefixes := []
+        for , d in [digits, padded, bare] {
+            seen := false
+            for , have in famPrefixes
+                if (have = d)
+                    seen := true
+            if !seen
+                famPrefixes.Push(d)
+        }
+
+        childNames := [client rest, rest]                ; MOHNP0134US03DIV, P0134US03DIV
+
+        for , fam in famPrefixes {
+            Loop Files baseDir "\" typeF "\" typeF fam "*", "D" {
+                parentPath := A_LoopFilePath
+                for , cn in childNames {                 ; exact child first
+                    full := parentPath "\" cn
+                    if DirExist(full) {
+                        Log("family-folder exact hit → " full)
+                        if OpenExplorer(full)
+                            return true
+                    }
+                }
+                for , cn in childNames {                 ; then prefix child
+                    hit := FindPrefixDir(parentPath, cn)
+                    if hit {
+                        Log("family-folder prefix hit → " hit)
+                        if OpenExplorer(hit)
+                            return true
+                    }
+                }
+            }
+        }
+    }
+
     ; 6) Deep recursive prefix scan (client folder)
-    hit := DeepPrefixScan(baseDir, rest)
+    hit := DeepPrefixScan(baseDir, [rest, client rest])
     if hit {
         Log("Deep scan hit → " hit)
         return OpenExplorer(hit)
@@ -307,11 +355,14 @@ FindPrefixDir(dir, prefix) {
     return ""
 }
 
-DeepPrefixScan(rootDir, prefix) {
+DeepPrefixScan(rootDir, prefixes) {
     rootDir := RTrim(rootDir, "\/")
+    if !IsObject(prefixes)
+        prefixes := [prefixes]
     Loop Files rootDir "\*", "DR" {
-        if InStr(A_LoopFileName, prefix) = 1
-            return A_LoopFilePath
+        for , p in prefixes
+            if (p != "" && InStr(A_LoopFileName, p) = 1)
+                return A_LoopFilePath
     }
     return ""
 }
