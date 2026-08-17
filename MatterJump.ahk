@@ -14,6 +14,13 @@ minHeight      := 900
 
 clientRE       := "^[A-Z]{4}"                  ; first four letters
 restRE         := "i)^[PT]\d+|^\d+[PT]"        ; detect P/T anywhere (case‑insensitive)
+
+; Shared Node resolver — single source of truth for Q-path resolution
+; (tcklsh backend qDriveService.resolveMatterPath). When present it is tried
+; FIRST; the local logic below stays as the fallback for when node or the
+; tcklsh checkout is unavailable.
+nodeResolver   := "C:\Dev\tcklsh\backend\scripts\resolve-matter-path.js"
+nodeTimeoutSec := 30                           ; kill node + fall back after this
 ;─────────────────────────────────
 
 
@@ -86,6 +93,15 @@ TryOpenMatter(raw) {
     }
     client := m[0]
     rest   := SubStr(raw, 5)
+
+    ; 1b) shared Node resolver first (same algorithm, one implementation —
+    ;     see nodeResolver in USER SETTINGS). Empty result → local fallback.
+    p := ResolveViaNode(raw)
+    if p {
+        Log("node resolver hit → " p)
+        if OpenExplorer(p)
+            return true
+    }
 
     ; 2) detect P/T
     typeF := ""
@@ -229,6 +245,37 @@ TryOpenMatter(raw) {
 
     Log("No matching folder found")
     return false
+}
+
+;───────── NODE RESOLVER (shared with tcklsh backend) ─────────
+; Delegates resolution to backend/scripts/resolve-matter-path.js so this
+; hotkey and the tcklsh backend share ONE implementation (qDriveService).
+; Returns "" when the script is missing, node fails / finds nothing / times
+; out, or the printed path doesn't exist — caller falls back to local logic.
+ResolveViaNode(matter) {
+    global nodeResolver, nodeTimeoutSec
+    if !FileExist(nodeResolver)
+        return ""
+    tmp := A_Temp "\MatterJump-resolve-" A_TickCount ".txt"
+    cmd := A_ComSpec ' /c node "' nodeResolver '" "' matter '" > "' tmp '" 2>nul'
+    pid := 0
+    try Run(cmd, , "Hide", &pid)
+    if !pid
+        return ""
+    if ProcessWaitClose(pid, nodeTimeoutSec) {   ; non-zero → still alive → hung
+        try ProcessClose(pid)
+        Log("node resolver timed out after " nodeTimeoutSec "s")
+        try FileDelete(tmp)
+        return ""
+    }
+    out := ""
+    if FileExist(tmp) {
+        try out := Trim(FileRead(tmp, "UTF-8"), " `t`r`n")
+        try FileDelete(tmp)
+    }
+    if (out = "" || !DirExist(out))
+        return ""
+    return out
 }
 
 ;───────── CLIPBOARD → TEXT ─────────
