@@ -2,10 +2,18 @@
 
 #Requires AutoHotkey v2.0
 
+; Allow a second thread ONLY so a press that arrives while a lookup or a dialog
+; is pending reaches HandleHotkey and gets told so. At the default of 1 the
+; press is discarded before any of our code runs — the hotkey goes completely
+; dead (e.g. while an InputBox sits unnoticed behind another window) with no
+; log line, no tray tip, nothing. HandleHotkey's busy flag still serializes the
+; actual work, so this never runs two lookups at once.
+#MaxThreadsPerHotkey 2
+
 ;───────── USER SETTINGS ─────────
 drive          := "Q:"                         ; root share
 hotkeyCombo    := "^+j"                        ; Ctrl + Shift + J
-enableLogging  := false                        ; true = write MatterJump.log
+enableLogging  := true                         ; true = write MatterJump.log
 logFile        := A_ScriptDir "\MatterJump.log"
 
 forceMaximize  := true                         ; true=maximize, false=fixed size
@@ -15,16 +23,23 @@ minHeight      := 900
 clientRE       := "^[A-Z]{4}"                  ; first four letters
 restRE         := "i)^[PT]\d+|^\d+[PT]"        ; detect P/T anywhere (case‑insensitive)
 
+; A clean matter number and nothing else: 4-letter client code + alnum tail.
+matterRE       := "^[A-Z]{4}[A-Z0-9]{2,20}$"
+; The same shape found ANYWHERE inside a messy selection — Ctrl+C in Outlook
+; grabs the whole row ("… Our Ref: MOHNP0122US01CON …"), not a bare number.
+embeddedRE     := "[A-Z]{4}(?:\d{1,4}[PT]|[PT]\d{1,4})[A-Z]{2}\d{2}[A-Z]*"
+
 ; Shared Node resolver — single source of truth for Q-path resolution
 ; (tcklsh backend qDriveService.resolveMatterPath). When present it is tried
 ; FIRST; the local logic below stays as the fallback for when node or the
 ; tcklsh checkout is unavailable.
 nodeResolver   := "C:\Dev\tcklsh\backend\scripts\resolve-matter-path.js"
-nodeTimeoutSec := 30                           ; kill node + fall back after this
+nodeTimeoutSec := 12                           ; kill node + fall back after this
+deepScanSec    := 10                           ; cap on the last-resort recursive Q: walk
 ;─────────────────────────────────
 
 
-;───────── LOG HELPER (≤100 lines) ─────────
+;───────── LOG HELPER (≤400 lines) ─────────
 Log(msg) {
     global enableLogging, logFile
     if !enableLogging
@@ -38,7 +53,7 @@ Log(msg) {
             arr := StrSplit(RTrim(txt,"`n"), "`n", "`r")
     }
     arr.Push(entry)
-    while arr.Length > 100
+    while arr.Length > 400
         arr.RemoveAt(1)
 
     joined := ""
@@ -54,37 +69,100 @@ Log(msg) {
 ;───────── HOTKEY ─────────
 Hotkey(hotkeyCombo, (*) => HandleHotkey())
 
+; Resolution can block for seconds (node + Q: share). AutoHotkey allows only one
+; thread per hotkey, so a press that lands while the previous one is still
+; working is silently discarded — the hotkey looks dead. Say so instead.
 HandleHotkey() {
+    static busy := false
+    if busy {
+        Log("Hot-key ignored – previous lookup still running")
+        TrayTip("Still looking up the last matter…", "MatterJump")
+        return
+    }
+    busy := true
+    try
+        RunHotkey()
+    finally
+        busy := false
+}
+
+RunHotkey() {
+    global drive, logFile
     Log("Hot-key pressed")
-    sel := GetHighlightedText()
-    Log("Clipboard → '" sel "'")
+    grabbed := GetHighlightedText()
+    sel     := NormalizeMatter(grabbed)
+    Log("Clipboard → '" StrReplace(StrReplace(grabbed, "`r", " "), "`n", " ") "'  →  matter '" sel "'")
 
     if sel != "" && TryOpenMatter(sel) {
         Log("Opened via highlight")
         return
     }
 
-    ib := InputBox(
-        "Enter full matter number (e.g., WOOS12PUS01)",
-        "Open Matter Folder",
-        "w300 h120",
-        sel
-    )
-    if ib.Result = "Cancel" {
-        Log("Prompt cancelled")
-        return
+    seed := sel
+    Loop {
+        ib := InputBox(
+            "Enter full matter number (e.g., WOOS12PUS01)",
+            "Open Matter Folder",
+            "w300 h120",
+            seed
+        )
+        if ib.Result = "Cancel" {
+            Log("Prompt cancelled")
+            return
+        }
+        user := StrUpper(Trim(ib.Value))
+        Log("User entered → '" user "'")
+        if user = ""
+            continue
+        if TryOpenMatter(user) {
+            Log("Opened via prompt")
+            return
+        }
+        ; Never fail silently — a dead-quiet hotkey is indistinguishable from
+        ; one that never fired, which is exactly how this bug was reported.
+        ; T30 so an unnoticed modal can never wedge the hotkey indefinitely.
+        Log("No folder for '" user "'")
+        msg := "No folder found for '" user "'.`n`nSearched under "
+             . drive "\" SubStr(user, 1, 1) "\" SubStr(user, 1, 4) "`n`n"
+             . "Details: " logFile
+        MsgBox(msg, "MatterJump — not found", "Icon! T30")
+        seed := user
     }
-    user := StrUpper(Trim(ib.Value))
-    Log("User entered → '" user "'")
-    TryOpenMatter(user) ? Log("Opened via prompt")
-                        : Log("No folder for '" user "'")
+}
+
+; Reduce whatever we were handed to a bare matter number. Ctrl+C in Outlook
+; grabs the entire row (headers, sender, subject, tabs, newlines), so the raw
+; text is usually NOT a matter number — pull one out of it when there is one.
+; Returns "" when there is nothing matter-shaped: callers must not hand
+; arbitrary text to the node resolver or the deep Q: scan, because both are
+; slow enough on the share to look like the hotkey did nothing at all.
+NormalizeMatter(raw) {
+    global matterRE, embeddedRE
+    s := StrUpper(Trim(raw, " `t`r`n"))
+    if s = ""
+        return ""
+    if RegExMatch(s, matterRE)
+        return s
+    if RegExMatch(s, embeddedRE, &m) {
+        Log("Extracted matter '" m[0] "' from selection")
+        return m[0]
+    }
+    return ""
 }
 
 ;───────── RESOLVE & OPEN ─────────
 TryOpenMatter(raw) {
     global drive, clientRE, restRE
-    raw := StrUpper(Trim(raw))
+    raw := NormalizeMatter(raw)
     Log("TryOpenMatter('" raw "')")
+
+    ; 0) bail before doing any I/O on non-matter text. Without this the node
+    ;    resolver and step 6's recursive scan both run against garbage — each
+    ;    costing many seconds on the Q: share for a guaranteed miss.
+    if raw = "" {
+        Log("Not matter-shaped – nothing to resolve")
+        return false
+    }
 
     ; 1) validate client
     if !RegExMatch(raw, clientRE, &m) {
@@ -256,8 +334,20 @@ ResolveViaNode(matter) {
     global nodeResolver, nodeTimeoutSec
     if !FileExist(nodeResolver)
         return ""
+    ; The argument goes into a cmd.exe command line by concatenation: a quote,
+    ; newline or shell metacharacter in it would break (or redirect) the
+    ; command. Callers already normalize, so this is belt-and-braces.
+    safe := RegExReplace(StrUpper(matter), "[^A-Z0-9]", "")
+    if safe = ""
+        return ""
+    ; Give node a scan budget comfortably under our own kill timeout, so a miss
+    ; comes back as a clean "not found" and we reach the local fallback rather
+    ; than burning the full timeout and then killing it mid-scan. (The CLI
+    ; otherwise defaults itself to 20 s — longer than we are willing to wait.)
+    budgetMs := (nodeTimeoutSec - 4) * 1000
     tmp := A_Temp "\MatterJump-resolve-" A_TickCount ".txt"
-    cmd := A_ComSpec ' /c node "' nodeResolver '" "' matter '" > "' tmp '" 2>nul'
+    cmd := A_ComSpec ' /c set "Q_DRIVE_SCAN_DEADLINE_MS=' budgetMs '" && node "'
+         . nodeResolver '" "' safe '" > "' tmp '" 2>nul'
     pid := 0
     try Run(cmd, , "Hide", &pid)
     if !pid
@@ -402,11 +492,21 @@ FindPrefixDir(dir, prefix) {
     return ""
 }
 
+; Last-resort recursive walk of the client folder. On the Q: share this can run
+; for MINUTES on a miss, and it blocks the hotkey thread the whole time — which
+; is precisely how a not-found matter used to present as "nothing happened".
+; Bounded by wall clock so a miss always comes back and says so.
 DeepPrefixScan(rootDir, prefixes) {
+    global deepScanSec
     rootDir := RTrim(rootDir, "\/")
     if !IsObject(prefixes)
         prefixes := [prefixes]
+    deadline := A_TickCount + deepScanSec * 1000
     Loop Files rootDir "\*", "DR" {
+        if (A_TickCount > deadline) {
+            Log("Deep scan gave up after " deepScanSec "s in " rootDir)
+            return ""
+        }
         for , p in prefixes
             if (p != "" && InStr(A_LoopFileName, p) = 1)
                 return A_LoopFilePath
