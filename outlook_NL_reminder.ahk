@@ -1,21 +1,62 @@
-﻿﻿#Requires AutoHotkey v2.0
+﻿#Requires AutoHotkey v2.0
 #SingleInstance Force
 
+; Allow a second thread ONLY so a press that arrives while the prompt is
+; already open reaches the handler and gets told so. At the default of 1 the
+; press is discarded before any script code runs and the hotkey goes silently
+; dead. The busy flag below still serializes the real work.
+#MaxThreadsPerHotkey 2
+
 ; ─────────────── USER‑FACING SETTINGS ───────────────
-hotkey   := "^!r"       ; ⇧Ctrl+Alt+R
+hotCombo := "^!r"       ; ⇧Ctrl+Alt+R
 defaultTime := "09:00 AM"
 dialogSize  := "w450 h200"
 ; ────────────────────────────────────────────────────
 
-Hotkey(hotkey, AddReminder)
+Hotkey(hotCombo, HandleHotkey)
 
-AddReminder(*) {
+HandleHotkey(*) {
+    static busy := false
+    if busy {
+        TrayTip("The reminder prompt is already open.", "Add Reminder")
+        return
+    }
+    busy := true
+    try
+        AddReminder()
+    finally
+        busy := false
+}
+
+; AutoHotkey's InputBox has no always-on-top option, so the prompt can end up
+; behind Outlook — and while it sits there unnoticed the hotkey does nothing at
+; all. Raise it as soon as it exists so that state is unreachable.
+TopmostInputBox(prompt, title, options := "", default := "") {
+    tries := 0
+    Raise() {
+        if (hwnd := WinExist(title)) {
+            try {
+                WinSetAlwaysOnTop(true, hwnd)
+                WinActivate(hwnd)
+            }
+            SetTimer(Raise, 0)
+        } else if (++tries > 40)
+            SetTimer(Raise, 0)
+    }
+    SetTimer(Raise, 50)
+    ib := InputBox(prompt, title, options, default)
+    SetTimer(Raise, 0)
+    return ib
+}
+
+AddReminder() {
+    global defaultTime, dialogSize
     ; 1) Ask the user for a natural‑language reminder
     prompt :=
         "Type your reminder (examples):`n" .
         '  - "remind mike to give an answer in two days"`n' .
         '  - "remind me next Tuesday at 10 am to prepare and file a reply"'
-    ib := InputBox(prompt, "Add Reminder", dialogSize)
+    ib := TopmostInputBox(prompt, "Add Reminder", dialogSize)
     if ib.Result != "OK"
         return
     user := ib.Value

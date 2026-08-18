@@ -7,6 +7,12 @@
 #SingleInstance Force
 #Warn
 
+; Allow a second thread ONLY so a press arriving while the template GUI or a
+; placeholder prompt is open reaches the handler and gets told so. At the
+; default of 1 the press is discarded before any script code runs and the
+; hotkey goes silently dead. The busy flag below still serializes the work.
+#MaxThreadsPerHotkey 2
+
 ; -------- CONFIG --------
 placeholderRx := "{{(.*?)}}"                  ; placeholder pattern
 logFile       := A_ScriptDir "\TemplateReplace.log"
@@ -26,8 +32,21 @@ global templates := [
 ]
 
 ; -------- HOTKEY --------
-^+t:: HandleTemplateReplace()
+^+t:: HandleHotkey()
 return
+
+HandleHotkey() {
+    static busy := false
+    if busy {
+        TrayTip("A template dialog is already open.", "Template Replacer")
+        return
+    }
+    busy := true
+    try
+        HandleTemplateReplace()
+    finally
+        busy := false
+}
 
 ; =======================================
 ;               MAIN
@@ -105,7 +124,11 @@ ShowTemplateSearchGUI(templates) {
         g.Destroy()
     ))
     btnCancel.OnEvent("Click", (*) => (submitted := false, closed := true, g.Destroy()))
-    g.OnEvent("Close", (*) => (submitted := false, closed := true))
+    ; Must Destroy, and must not return a truthy value: a Close handler whose
+    ; result is non-zero cancels the default close, so clicking the X used to
+    ; leave this always-on-top window stranded on screen after the script had
+    ; already moved on. Verified 2026-08-18 — WinClose would not shift it.
+    g.OnEvent("Close", (*) => (submitted := false, closed := true, g.Destroy(), 0))
 
     g.Show()
     while !closed
@@ -216,15 +239,37 @@ ExtractDateFromText(text) {
 
 PromptForValue(prompt, typ := "text") {
     if (typ = "date") {
-        res := InputBox(prompt, "Date Input", "w360 h140")
+        res := TopmostInputBox(prompt, "Date Input", "w360 h140")
         if res.Result = "Cancel"
             return ""
         return res.Value
     }
-    res := InputBox(prompt, "Input", "w420 h140")
+    res := TopmostInputBox(prompt, "Input", "w420 h140")
     if res.Result = "Cancel"
         return ""
     return res.Value
+}
+
+; AutoHotkey's InputBox has no always-on-top option, so a placeholder prompt
+; can end up behind Word — and while it sits there unnoticed the hotkey does
+; nothing at all. A template with several placeholders opens one of these per
+; placeholder, so raise each as soon as it exists.
+TopmostInputBox(prompt, title, options := "", default := "") {
+    tries := 0
+    Raise() {
+        if (hwnd := WinExist(title)) {
+            try {
+                WinSetAlwaysOnTop(true, hwnd)
+                WinActivate(hwnd)
+            }
+            SetTimer(Raise, 0)
+        } else if (++tries > 40)
+            SetTimer(Raise, 0)
+    }
+    SetTimer(Raise, 50)
+    ib := InputBox(prompt, title, options, default)
+    SetTimer(Raise, 0)
+    return ib
 }
 
 ; =======================================

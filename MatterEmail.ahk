@@ -1,16 +1,57 @@
 #Requires AutoHotkey v2.0+
 #SingleInstance Force
 
+; Allow a second thread ONLY so a press arriving while the prompt is open — or
+; during the up-to-waitSecs wait for the new Outlook window — reaches the
+; handler and gets told so. At the default of 1 the press is discarded before
+; any script code runs and the hotkey goes silently dead. The busy flag below
+; still serializes the real work.
+#MaxThreadsPerHotkey 2
+
 ; ── CONFIG ───────────────────────────────────────────────────────────────
 hotCombo   := "^+m"            ; Ctrl + Shift + M triggers the search
 outlookExe := "outlook.exe"    ; Adjust if Outlook lives elsewhere
 waitSecs   := 10               ; Max seconds to wait for the *new* window
 ; ─────────────────────────────────────────────────────────────────────────
 
-Hotkey(hotCombo, SearchMatterAllMailboxes)
+Hotkey(hotCombo, HandleHotkey)
 return
 
-SearchMatterAllMailboxes(*) {
+HandleHotkey(*) {
+    static busy := false
+    if busy {
+        TrayTip("Still working on the last search…", "MatterEmail")
+        return
+    }
+    busy := true
+    try
+        SearchMatterAllMailboxes()
+    finally
+        busy := false
+}
+
+; AutoHotkey's InputBox has no always-on-top option, so the prompt can end up
+; behind Outlook — and while it sits there unnoticed the hotkey does nothing at
+; all. Raise it as soon as it exists so that state is unreachable.
+TopmostInputBox(prompt, title, options := "", default := "") {
+    tries := 0
+    Raise() {
+        if (hwnd := WinExist(title)) {
+            try {
+                WinSetAlwaysOnTop(true, hwnd)
+                WinActivate(hwnd)
+            }
+            SetTimer(Raise, 0)
+        } else if (++tries > 40)
+            SetTimer(Raise, 0)
+    }
+    SetTimer(Raise, 50)
+    ib := InputBox(prompt, title, options, default)
+    SetTimer(Raise, 0)
+    return ib
+}
+
+SearchMatterAllMailboxes() {
     global outlookExe, waitSecs
 
     ; 1 — Capture selected text or prompt ---------------------------------
@@ -22,7 +63,7 @@ SearchMatterAllMailboxes(*) {
     A_Clipboard := saved
 
     if (matter = "") {
-        ib := InputBox("Enter the matter number:", "Matter Number Needed")
+        ib := TopmostInputBox("Enter the matter number:", "Matter Number Needed")
         if ib.Result = "Cancel"
             return
         matter := Trim(ib.Value)
