@@ -13,7 +13,12 @@ defaultTime := "09:00 AM"
 dialogSize  := "w450 h200"
 ; ────────────────────────────────────────────────────
 
+; Scope to Outlook only — the handler drives Outlook's Flag for Follow-Up
+; dialog (Ctrl+Shift+G), and a global bind steals Ctrl+Alt+R from every other
+; app (e.g. Word's reject-track-changes shortcut).
+HotIfWinActive("ahk_exe OUTLOOK.EXE")
 Hotkey(hotCombo, HandleHotkey)
+HotIfWinActive()
 
 HandleHotkey(*) {
     static busy := false
