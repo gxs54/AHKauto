@@ -188,134 +188,25 @@ TryOpenMatter(raw) {
 
     baseDir := drive "\" SubStr(client,1,1) "\" client
 
-    ; 3) build candidate list
-    cand := []
-
-    if typeF {
-        stripped := RegExMatch(rest, "^[PT](.*)$", &s) ? s[1] : rest
-
-        cand.Push(baseDir "\" typeF "\" rest)                    ; exact with repeated P/T
-        if stripped != rest
-            cand.Push(baseDir "\" typeF "\" stripped)            ; exact without repeated P/T
-
-        cand.Push({dir:baseDir "\" typeF, prefix:rest})          ; prefix in P/T
-        if stripped != rest
-            cand.Push({dir:baseDir "\" typeF, prefix:stripped})
-			
-		fullName := client rest                      					; STRG90PUS01
-		cand.Push(baseDir "\" typeF "\" fullName)                       ; exact
-		cand.Push({dir:baseDir "\" typeF, prefix:fullName})             ; prefix	
-    }
-
-    cand.Push(baseDir "\" rest)                                  ; exact in root
-    cand.Push({dir:baseDir, prefix:rest})                        ; prefix in root
-	
-	; client+rest in root (CBED2PUS01 style)
-	fullRootName := client rest
-	cand.Push(baseDir "\" fullRootName)                           ; exact
-	cand.Push({dir:baseDir, prefix:fullRootName})                 ; prefix
-
-
-    ; try candidates
-    for , c in cand {
-        if IsObject(c) {
-            p := FindPrefixDir(c.dir, c.prefix)
-            Log("Prefix '" c.prefix "' in '" c.dir "' → " (p?"hit":"none"))
-            if p && OpenExplorer(p)
-                return true
-        } else if DirExist(c) && OpenExplorer(c) {
+    ; 3) walk the layout rules for the spelling as typed, then for each of its
+    ;    zero-padding variants (P0409WOUS → P409WOUS). Every spelling gets the
+    ;    WHOLE ladder before the next is tried — see TryRestSpelling for why that
+    ;    ordering is load-bearing.
+    restVariants := RestPaddingVariants(rest)
+    for vi, spelling in restVariants {
+        hit := TryRestSpelling(baseDir, client, typeF, spelling, vi > 1)
+        if hit && OpenExplorer(hit)
             return true
-        }
     }
 
-    ; 4) MOHN-style two-level (parent ends with 01)
-    if typeF && RegExMatch(rest, "^(\d+)" . typeF . "([A-Z]{2})(\d{2})(.*)$", &e1) {
-        digits  := e1[1]
-        country := e1[2]
-        serial  := e1[3]
-        suffix  := e1[4]
-        parent  := client digits typeF country "01"                 ; e.g. MOHN14PUS01
-        child   := digits typeF country serial suffix               ; e.g. 14PUS02CON
-        parentDir := baseDir "\" typeF "\" parent
-        if DirExist(parentDir) {
-            full := parentDir "\" child
-            if DirExist(full) && OpenExplorer(full)
-                return true
-            hit := FindPrefixDir(parentDir, child)
-            if hit && OpenExplorer(hit)
-                return true
-        }
+    ; 6) Deep recursive prefix scan (client folder) — both name shapes, for the
+    ;    typed spelling and each zero-padding variant.
+    scanPrefixes := []
+    for vi, r in restVariants {
+        scanPrefixes.Push({p:r, ds:(vi > 1)})
+        scanPrefixes.Push({p:client r, ds:(vi > 1)})
     }
-
-    ; 5) ANCH “same-number” fallback (no repeated P/T in child name)
-    if typeF && RegExMatch(rest, "^[PT]0*(\d+)([A-Z]{2})(\d{2})(.*)$", &e2) {
-        num        := e2[1]                       ; 101
-        country    := e2[2]                       ; US
-        serial     := e2[3]                       ; 02
-        suffix     := e2[4]                       ; (maybe blank)
-        parentPref := num                         ; 101
-        childPref  := num country serial suffix   ; 101US02...
-
-        Loop Files baseDir "\" typeF "\" parentPref "*", "D" {
-            parentPath := A_LoopFilePath
-            hit := FindPrefixDir(parentPath, childPref)
-            if hit && OpenExplorer(hit) {
-                Log("same-number fallback hit → " hit)
-                return true
-            }
-        }
-    }
-
-    ; 5b) Family-folder nesting — Q:\M\MOHN\P\P0134\MOHNP0134US03DIV
-    ;     Newer matters live one level below the P/T folder, inside a per-family
-    ;     folder named "<P|T><family digits>" (P0134). The child folder may carry
-    ;     the client code (MOHNP0134US03DIV) or not (BAEK: P0119\P0119US02DIV).
-    if typeF && RegExMatch(rest, "^[PT]\d+", &f) {
-        digits := SubStr(f[0], 2)                        ; 0134
-        bare   := LTrim(digits, "0")                     ; 134
-        if bare = ""
-            bare := "0"
-        padded := StrLen(bare) < 4                       ; 0134
-                    ? SubStr("0000", 1, 4 - StrLen(bare)) bare
-                    : bare
-
-        famPrefixes := []
-        for , d in [digits, padded, bare] {
-            seen := false
-            for , have in famPrefixes
-                if (have = d)
-                    seen := true
-            if !seen
-                famPrefixes.Push(d)
-        }
-
-        childNames := [client rest, rest]                ; MOHNP0134US03DIV, P0134US03DIV
-
-        for , fam in famPrefixes {
-            Loop Files baseDir "\" typeF "\" typeF fam "*", "D" {
-                parentPath := A_LoopFilePath
-                for , cn in childNames {                 ; exact child first
-                    full := parentPath "\" cn
-                    if DirExist(full) {
-                        Log("family-folder exact hit → " full)
-                        if OpenExplorer(full)
-                            return true
-                    }
-                }
-                for , cn in childNames {                 ; then prefix child
-                    hit := FindPrefixDir(parentPath, cn)
-                    if hit {
-                        Log("family-folder prefix hit → " hit)
-                        if OpenExplorer(hit)
-                            return true
-                    }
-                }
-            }
-        }
-    }
-
-    ; 6) Deep recursive prefix scan (client folder)
-    hit := DeepPrefixScan(baseDir, [rest, client rest])
+    hit := DeepPrefixScan(baseDir, scanPrefixes)
     if hit {
         Log("Deep scan hit → " hit)
         return OpenExplorer(hit)
@@ -485,10 +376,233 @@ OpenExplorer(path) {
 }
 
 ;───────── HELPERS ─────────
-FindPrefixDir(dir, prefix) {
+
+; True when `name` starts with `prefix`.
+;
+; digitSafe additionally refuses a match that runs straight into more digits.
+; This guards the zero-padding variants (see RestPaddingVariants): the unpadded
+; spelling of P0004 is P4, and a bare wildcard would happily return P409WOUS
+; for it. Requiring a non-digit after a digit-final prefix keeps P4US01 matching
+; while rejecting P409WOUS.
+PrefixHit(name, prefix, digitSafe := false) {
+    if (prefix = "" || InStr(name, prefix) != 1)
+        return false
+    if (digitSafe && RegExMatch(prefix, "\d$")) {
+        next := SubStr(name, StrLen(prefix) + 1, 1)
+        if (next != "" && RegExMatch(next, "^\d$"))
+            return false
+    }
+    return true
+}
+
+FindPrefixDir(dir, prefix, digitSafe := false) {
     dir := RTrim(dir,"\/")
+    if (prefix = "")
+        return ""
     Loop Files dir "\" prefix "*", "D"
-        return A_LoopFilePath
+        if PrefixHit(A_LoopFileName, prefix, digitSafe)
+            return A_LoopFilePath
+    return ""
+}
+
+; Zero-padding spellings of a matter's `rest` (everything after the 4-char
+; client code).
+;
+; The firm writes the same matter number both padded and unpadded, and the two
+; spellings sit side by side under one client: the docket says HARAP0409WOUS
+; while the folder is Q:\H\HARA\P409WOUS — yet its neighbours are padded
+; (P0416WOUS, P0419WOUS). Leading zeros carry no meaning in a matter number, so
+; re-spell the leading digit run at every width the firm actually uses (as
+; typed, unpadded, and 4-wide) and try each.
+;
+; Only the type-first shape (P0409WOUS) varies — the digits-first shape
+; (12PUS01) is always written unpadded on the share.
+;
+; The typed spelling is always FIRST, so a matter that resolves today still
+; resolves by exactly the same path.
+;
+; Mirrors restPaddingVariants() in the tcklsh backend's qDriveService.js —
+; that is the shared resolver this script calls first; keep the two in step.
+RestPaddingVariants(rest) {
+    out := [rest]
+    if !RegExMatch(rest, "i)^([PT])(\d+)(.*)$", &m)
+        return out
+    type   := StrUpper(m[1])
+    digits := m[2]
+    tail   := m[3]
+    bare   := LTrim(digits, "0")
+    if (bare = "")
+        bare := "0"
+    for , width in [StrLen(digits), StrLen(bare), 4] {
+        if (width < StrLen(bare))
+            continue
+        pad := ""
+        Loop width - StrLen(bare)
+            pad .= "0"
+        v := type pad bare tail
+        seen := false
+        for , have in out
+            if (have = v)
+                seen := true
+        if !seen
+            out.Push(v)
+    }
+    return out
+}
+
+; Append a candidate unless an identical one is already queued. A duplicate is a
+; wasted Q: round-trip, and a miss walks the whole list.
+AddCand(cand, seen, c) {
+    key := IsObject(c) ? (c.dir "|" c.prefix) : (c "|")
+    if seen.Has(key)
+        return
+    seen[key] := true
+    cand.Push(c)
+}
+
+; One complete pass of the layout rules for a SINGLE spelling of `rest`:
+; candidate sweep, then the MOHN / ANCH / family-folder special cases in the
+; order they have always run. Returns the folder path, or "".
+;
+; Every spelling gets the WHOLE ladder before the next spelling is tried — not a
+; merged candidate list. That ordering is load-bearing: ANCHP0101WO01 lives at
+; Q:\A\ANCH\P\101WO01\101WO01, and Q:\A\ANCH\P\101WO01 is the family folder
+; holding its siblings (101AU01, 101CA01, …). Merging the lists let the unpadded
+; candidate P101WO01 → stripped "101WO01" match that family folder before the
+; ANCH rule could reach the matter inside it, so the resolver returned the
+; parent. Keeping the passes whole means the typed spelling exhausts every rule
+; first and nothing that resolves today can change.
+;
+; Mirrors tryRestSpelling() inside resolveMatterPath() in the tcklsh backend's
+; qDriveService.js — that is the shared resolver this script calls first.
+;
+; isVar marks a zero-padding variant, which makes its prefix matches digit-safe.
+TryRestSpelling(baseDir, client, typeF, r, isVar) {
+    ; 3) build candidate list
+    cand     := []
+    seenCand := Map()
+
+    if typeF {
+        stripped := RegExMatch(r, "^[PT](.*)$", &s) ? s[1] : r
+
+        AddCand(cand, seenCand, baseDir "\" typeF "\" r)                     ; exact with repeated P/T
+        if stripped != r
+            AddCand(cand, seenCand, baseDir "\" typeF "\" stripped)          ; exact without repeated P/T
+
+        AddCand(cand, seenCand, {dir:baseDir "\" typeF, prefix:r, ds:isVar}) ; prefix in P/T
+        if stripped != r
+            AddCand(cand, seenCand, {dir:baseDir "\" typeF, prefix:stripped, ds:isVar})
+
+        fullName := client r                                                 ; STRG90PUS01
+        AddCand(cand, seenCand, baseDir "\" typeF "\" fullName)              ; exact
+        AddCand(cand, seenCand, {dir:baseDir "\" typeF, prefix:fullName, ds:isVar})
+    }
+
+    AddCand(cand, seenCand, baseDir "\" r)                                   ; exact in root
+    AddCand(cand, seenCand, {dir:baseDir, prefix:r, ds:isVar})               ; prefix in root
+
+    ; client+rest in root (CBED2PUS01 style)
+    fullRootName := client r
+    AddCand(cand, seenCand, baseDir "\" fullRootName)                        ; exact
+    AddCand(cand, seenCand, {dir:baseDir, prefix:fullRootName, ds:isVar})    ; prefix
+
+    for , c in cand {
+        if IsObject(c) {
+            p := FindPrefixDir(c.dir, c.prefix, c.ds)
+            Log("Prefix '" c.prefix "' in '" c.dir "' → " (p?"hit":"none"))
+            if p
+                return p
+        } else if DirExist(c) {
+            return c
+        }
+    }
+
+    ; 4) MOHN-style two-level (parent ends with 01)
+    if typeF && RegExMatch(r, "^(\d+)" . typeF . "([A-Z]{2})(\d{2})(.*)$", &e1) {
+        digits  := e1[1]
+        country := e1[2]
+        serial  := e1[3]
+        suffix  := e1[4]
+        parent  := client digits typeF country "01"                 ; e.g. MOHN14PUS01
+        child   := digits typeF country serial suffix               ; e.g. 14PUS02CON
+        parentDir := baseDir "\" typeF "\" parent
+        if DirExist(parentDir) {
+            full := parentDir "\" child
+            if DirExist(full)
+                return full
+            hit := FindPrefixDir(parentDir, child, isVar)
+            if hit
+                return hit
+        }
+    }
+
+    ; 5) ANCH "same-number" fallback (no repeated P/T in child name)
+    if typeF && RegExMatch(r, "^[PT]0*(\d+)([A-Z]{2})(\d{2})(.*)$", &e2) {
+        num        := e2[1]                       ; 101
+        country    := e2[2]                       ; US
+        serial     := e2[3]                       ; 02
+        suffix     := e2[4]                       ; (maybe blank)
+        parentPref := num                         ; 101
+        childPref  := num country serial suffix   ; 101US02...
+
+        Loop Files baseDir "\" typeF "\" parentPref "*", "D" {
+            parentPath := A_LoopFilePath
+            hit := FindPrefixDir(parentPath, childPref, isVar)
+            if hit {
+                Log("same-number fallback hit → " hit)
+                return hit
+            }
+        }
+    }
+
+    ; 5b) Family-folder nesting — Q:\M\MOHN\P\P0134\MOHNP0134US03DIV
+    ;     Newer matters live one level below the P/T folder, inside a per-family
+    ;     folder named "<P|T><family digits>" (P0134). The child folder may carry
+    ;     the client code (MOHNP0134US03DIV) or not (BAEK: P0119\P0119US02DIV).
+    if typeF && RegExMatch(r, "^[PT]\d+", &f) {
+        digits := SubStr(f[0], 2)                        ; 0134
+        bare   := LTrim(digits, "0")                     ; 134
+        if bare = ""
+            bare := "0"
+        padded := StrLen(bare) < 4                       ; 0134
+                    ? SubStr("0000", 1, 4 - StrLen(bare)) bare
+                    : bare
+
+        famPrefixes := []
+        for , d in [digits, padded, bare] {
+            seen := false
+            for , have in famPrefixes
+                if (have = d)
+                    seen := true
+            if !seen
+                famPrefixes.Push(d)
+        }
+
+        childNames := [client r, r]                      ; MOHNP0134US03DIV, P0134US03DIV
+        if (childNames[1] = childNames[2])
+            childNames.RemoveAt(2)
+
+        for , fam in famPrefixes {
+            Loop Files baseDir "\" typeF "\" typeF fam "*", "D" {
+                parentPath := A_LoopFilePath
+                for , cn in childNames {                 ; exact child first
+                    full := parentPath "\" cn
+                    if DirExist(full) {
+                        Log("family-folder exact hit → " full)
+                        return full
+                    }
+                }
+                for , cn in childNames {                 ; then prefix child
+                    hit := FindPrefixDir(parentPath, cn, isVar)
+                    if hit {
+                        Log("family-folder prefix hit → " hit)
+                        return hit
+                    }
+                }
+            }
+        }
+    }
+
     return ""
 }
 
@@ -496,19 +610,28 @@ FindPrefixDir(dir, prefix) {
 ; for MINUTES on a miss, and it blocks the hotkey thread the whole time — which
 ; is precisely how a not-found matter used to present as "nothing happened".
 ; Bounded by wall clock so a miss always comes back and says so.
+; A list entry may be a plain prefix string or a {p, ds} pair, which is how the
+; zero-padding variants are passed in (see PrefixHit).
 DeepPrefixScan(rootDir, prefixes) {
     global deepScanSec
     rootDir := RTrim(rootDir, "\/")
     if !IsObject(prefixes)
         prefixes := [prefixes]
+    wanted := []
+    for , p in prefixes {
+        if IsObject(p)
+            wanted.Push(p)
+        else if (p != "")
+            wanted.Push({p:p, ds:false})
+    }
     deadline := A_TickCount + deepScanSec * 1000
     Loop Files rootDir "\*", "DR" {
         if (A_TickCount > deadline) {
             Log("Deep scan gave up after " deepScanSec "s in " rootDir)
             return ""
         }
-        for , p in prefixes
-            if (p != "" && InStr(A_LoopFileName, p) = 1)
+        for , e in wanted
+            if PrefixHit(A_LoopFileName, e.p, e.ds)
                 return A_LoopFilePath
     }
     return ""
