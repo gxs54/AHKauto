@@ -8,14 +8,14 @@
 #MaxThreadsPerHotkey 2
 
 ; ─────────────── USER‑FACING SETTINGS ───────────────
-hotCombo := "^!r"       ; ⇧Ctrl+Alt+R
+hotCombo := "^!+r"      ; Ctrl+Alt+Shift+R (plain Ctrl+Alt+R is the Outlook add-in's reject-change key)
 defaultTime := "09:00 AM"
 dialogSize  := "w450 h200"
 ; ────────────────────────────────────────────────────
 
 ; Scope to Outlook only — the handler drives Outlook's Flag for Follow-Up
-; dialog (Ctrl+Shift+G), and a global bind steals Ctrl+Alt+R from every other
-; app (e.g. Word's reject-track-changes shortcut).
+; dialog (Ctrl+Shift+G), and a global bind steals the key from every other
+; app (e.g. Word's Ctrl+Alt+R reject-track-changes shortcut).
 HotIfWinActive("ahk_exe OUTLOOK.EXE")
 Hotkey(hotCombo, HandleHotkey)
 HotIfWinActive()
